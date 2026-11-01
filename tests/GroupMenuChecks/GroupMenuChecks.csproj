@@ -13,6 +13,8 @@
     <Compile Include="../../src/app-wpf/PluginNodePowerControls.cs" Link="PluginNodePowerControls.cs" />
     <Compile Include="../../src/app-wpf/Models.cs" Link="Models.cs" />
     <Compile Include="../../src/app-wpf/HostStatusSnapshot.cs" Link="HostStatusSnapshot.cs" />
+    <Compile Include="../../src/app-wpf/PluginNodeStates.cs" Link="PluginNodeStates.cs" />
+    <Compile Include="../../src/app-wpf/ToggleViewSettings.cs" Link="ToggleViewSettings.cs" />
     <Compile Include="../../src/app-wpf/AppDataPaths.cs" Link="AppDataPaths.cs" />
   </ItemGroup>
 </Project>

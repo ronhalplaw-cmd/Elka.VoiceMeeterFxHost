@@ -63,6 +63,10 @@ public:
     virtual bool usesWorkerProcess() const noexcept { return false; }
 
     virtual bool process(AudioBufferView buffer, const PluginRoutingView& routing) noexcept = 0;
+
+    // Control-thread query: true once the processor can no longer run the plugin (it threw inside its
+    // audio callback, or its sandbox worker exited). Never called from the audio callback.
+    virtual bool hasFailed() const noexcept { return false; }
 private:
     inline static std::atomic<uint64_t> nextPerformanceToken { 1 };
 };

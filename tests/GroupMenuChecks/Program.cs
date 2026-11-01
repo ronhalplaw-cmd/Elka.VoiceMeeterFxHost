@@ -24,8 +24,8 @@ internal static class Program
         var node = fixture.Nodes[0];
         var menu = Menu(fixture.Window, node);
         var headers = menu.Items.OfType<MenuItem>().Select(item => item.Header is PluginNodePowerControls ? "Power controls" : (string)item.Header).ToArray();
-        Check(headers.SequenceEqual(new[] { "ID 1", "Open Editor", "Info", "Reload", "Power controls", "Properties",
-            "Minimize Pins", "Remove From Group", "Remove" }), "group VST menu parity and order");
+        Check(headers.SequenceEqual(new[] { "ID 1", "Open Editor", "Info", "Reload", "Power controls", "Deactivate", "Properties",
+            "Load Settings Once", "Minimize Pins", "Remove From Group", "Remove" }), "group VST menu parity and order");
         Check(!menu.Items.OfType<MenuItem>().First().IsEnabled, "ID is not clickable");
         Click(fixture, node, "Open Editor");
         Click(fixture, node, "Info");
@@ -61,6 +61,17 @@ internal static class Program
         Check(!node.Enabled && node.Bypassed, "linked group member powers off and bypasses");
         Click(fixture, node, "Disable Bypass");
         Check(node.Enabled && !node.Bypassed, "linked group member resumes from either control");
+        Click(fixture, node, "Link");
+        Click(fixture, node, "Deactivate");
+        Check(!node.Enabled && node.Bypassed, "deactivate is powered off with bypass passthrough");
+        Click(fixture, node, "Activate");
+        Check(node.Enabled && !node.Bypassed, "activate restores a running plugin");
+        Click(fixture, node, "Load Settings Once");
+        Check(fixture.LoadOnce.Contains(node.InstanceId), "load settings once can be turned on");
+        Check(Menu(fixture.Window, node).Items.OfType<MenuItem>().Single(item => item.Header as string == "Load Settings Once").IsChecked,
+            "load settings once shows as checked");
+        Click(fixture, node, "Load Settings Once");
+        Check(!fixture.LoadOnce.Contains(node.InstanceId), "load settings once can be turned off");
         fixture.Window.Close();
         Check(fixture.RouteCalls == 0, "menu and visual operations did not alter routes");
     }
@@ -164,6 +175,7 @@ internal static class Program
         public PluginGroupSnapshot Group { get; } = new() { Name = "Test Chain", MemberSlots = [1, 2] };
         public List<CanvasConnectionSnapshot> Cables { get; } = [];
         public List<string> Actions { get; } = [];
+        public HashSet<int> LoadOnce { get; } = [];
         public int RouteCalls { get; private set; }
         public PluginGroupPropertiesWindow Window { get; }
 
@@ -188,7 +200,10 @@ internal static class Program
                 (n, enabled) => PluginNodePowerState.SetEnabled(n, enabled, (_, _) => { }, (_, _) => { }),
                 (n, bypassed) => PluginNodePowerState.SetBypass(n, bypassed, (_, _) => { }, (_, _) => { }),
                 n => { Actions.Add($"reload:{n.InstanceId}"); Replace(n, n.Slot + 10); },
-                (n, collapsed) => n.PinsCollapsed = collapsed);
+                (n, collapsed) => n.PinsCollapsed = collapsed,
+                (n, deactivated) => { n.Enabled = !deactivated; n.Bypassed = deactivated; },
+                n => LoadOnce.Contains(n.InstanceId), (n, once) => { if (once) LoadOnce.Add(n.InstanceId); else LoadOnce.Remove(n.InstanceId); },
+                _ => false);
         }
 
         public void Replace(PluginNodeSnapshot node, int slot, bool changeLayout = false)

@@ -34,6 +34,10 @@ internal sealed class PluginGroupPropertiesWindow : Window
     private readonly Action<PluginNodeSnapshot> _reloadPluginNode;
     private readonly Action<PluginNodeSnapshot, bool> _setPluginNodePinsCollapsed;
     private readonly Action<PluginNodeSnapshot, bool> _setPluginNodePowerLinked;
+    private readonly Action<PluginNodeSnapshot, bool> _setPluginNodeDeactivated;
+    private readonly Func<PluginNodeSnapshot, bool> _isLoadSettingsOnce;
+    private readonly Action<PluginNodeSnapshot, bool> _setLoadSettingsOnce;
+    private readonly Func<PluginNodeSnapshot, bool> _isPluginFailed;
     private readonly Dictionary<int, Point> _originalNodePositions;
     private readonly List<CanvasConnectionSnapshot> _originalConnections;
     private readonly TextBox _nameTextBox = new();
@@ -73,6 +77,10 @@ internal sealed class PluginGroupPropertiesWindow : Window
         Action<PluginNodeSnapshot, bool> setPluginNodeBypass,
         Action<PluginNodeSnapshot> reloadPluginNode,
         Action<PluginNodeSnapshot, bool> setPluginNodePinsCollapsed,
+        Action<PluginNodeSnapshot, bool> setPluginNodeDeactivated,
+        Func<PluginNodeSnapshot, bool> isLoadSettingsOnce,
+        Action<PluginNodeSnapshot, bool> setLoadSettingsOnce,
+        Func<PluginNodeSnapshot, bool> isPluginFailed,
         Action<PluginNodeSnapshot, bool>? setPluginNodePowerLinked = null)
     {
         _group = group;
@@ -88,6 +96,10 @@ internal sealed class PluginGroupPropertiesWindow : Window
         _reloadPluginNode = reloadPluginNode;
         _setPluginNodePinsCollapsed = setPluginNodePinsCollapsed;
         _setPluginNodePowerLinked = setPluginNodePowerLinked ?? ((node, linked) => node.BypassPowerLinked = linked);
+        _setPluginNodeDeactivated = setPluginNodeDeactivated;
+        _isLoadSettingsOnce = isLoadSettingsOnce;
+        _setLoadSettingsOnce = setLoadSettingsOnce;
+        _isPluginFailed = isPluginFailed;
         _originalNodePositions = _members.ToDictionary(static node => node.Slot, static node => new Point(node.X, node.Y));
         _originalConnections = GroupConnections().Select(CloneConnection).ToList();
 
@@ -458,13 +470,14 @@ internal sealed class PluginGroupPropertiesWindow : Window
         var elements = new List<FrameworkElement>();
         var nodeHeight = NodeHeight(node);
         var selected = _selectedNodeSlot == node.Slot;
+        var failed = _isPluginFailed(node);
         var border = new Border
         {
             Width = NodeWidth,
             Height = nodeHeight,
             Background = NodeBrush(node),
-            BorderBrush = selected ? BrushFrom("#E2B84A") : node.MissingPlugin ? BrushFrom("#E15F5F") : BrushFrom("#55C27A"),
-            BorderThickness = selected ? new Thickness(2) : new Thickness(1),
+            BorderBrush = failed || node.MissingPlugin ? BrushFrom("#E15F5F") : selected ? BrushFrom("#E2B84A") : BrushFrom("#55C27A"),
+            BorderThickness = selected || failed ? new Thickness(2) : new Thickness(1),
             CornerRadius = new CornerRadius(6),
             Padding = new Thickness(10, 8, 10, 8),
             Tag = node,
@@ -491,10 +504,13 @@ internal sealed class PluginGroupPropertiesWindow : Window
                 },
                 new TextBlock
                 {
-                    Text = node.SidechainInputPins > 0
-                        ? $"{node.MainInputPins} in + {node.SidechainInputPins} sc / {node.OutputPins} out"
-                        : $"{node.InputPins} in / {node.OutputPins} out",
-                    Foreground = BrushFrom("#8AA0A6"),
+                    Text = failed
+                        ? "FAILED - Reload"
+                        : node.SidechainInputPins > 0
+                            ? $"{node.MainInputPins} in + {node.SidechainInputPins} sc / {node.OutputPins} out"
+                            : $"{node.InputPins} in / {node.OutputPins} out",
+                    Foreground = BrushFrom(failed ? "#E15F5F" : "#8AA0A6"),
+                    FontWeight = failed ? FontWeights.Bold : FontWeights.Normal,
                     Margin = new Thickness(0, 4, 0, 0),
                     TextTrimming = TextTrimming.CharacterEllipsis
                 }
@@ -522,6 +538,16 @@ internal sealed class PluginGroupPropertiesWindow : Window
     {
         var menu = new ContextMenu();
         menu.Items.Add(new MenuItem { Header = $"ID {node.InstanceId}", IsEnabled = false });
+        if (_isPluginFailed(node))
+        {
+            menu.Items.Add(new MenuItem
+            {
+                Header = "FAILED: crashed, audio passes unprocessed - use Reload",
+                IsEnabled = false,
+                Foreground = BrushFrom("#E15F5F")
+            });
+        }
+
         if (node.MissingPlugin)
         {
             menu.Items.Add(new MenuItem { Header = "Missing VST", IsEnabled = false });
@@ -541,12 +567,22 @@ internal sealed class PluginGroupPropertiesWindow : Window
         }));
         menu.Items.Add(new PluginNodePowerControls(node, bypassed => SetNodeBypass(node, bypassed),
             enabled => SetNodeEnabled(node, enabled), linked => _setPluginNodePowerLinked(node, linked)).AsMenuItem());
+        var deactivated = PluginNodeStates.IsDeactivated(node);
+        menu.Items.Add(CreateMenuItem(deactivated ? "Activate" : "Deactivate", () =>
+        {
+            _setPluginNodeDeactivated(node, !deactivated);
+            RebuildCanvas();
+        }));
         menu.Items.Add(new Separator());
         menu.Items.Add(CreateMenuItem("Properties", () =>
         {
             _showPluginNodeProperties(node);
             RebuildCanvas();
         }));
+        var loadOnce = _isLoadSettingsOnce(node);
+        var loadOnceItem = CreateMenuItem("Load Settings Once", () => _setLoadSettingsOnce(node, !loadOnce));
+        loadOnceItem.IsChecked = loadOnce;
+        menu.Items.Add(loadOnceItem);
         menu.Items.Add(CreateMenuItem(node.PinsCollapsed ? "Expand Pins" : "Minimize Pins", () =>
         {
             _setPluginNodePinsCollapsed(node, !node.PinsCollapsed);
@@ -1609,6 +1645,9 @@ internal sealed class PluginGroupPropertiesWindow : Window
     {
         if (!node.MissingPlugin)
         {
+            if (PluginNodeStates.IsDeactivated(node))
+                return PluginNodeStates.DeactivatedBrush();
+
             if (node.Bypassed)
                 return StateStripeBrush(BrushFrom("#102327"), Color.FromArgb(170, 240, 138, 62));
 

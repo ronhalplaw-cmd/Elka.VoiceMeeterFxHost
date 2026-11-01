@@ -2,6 +2,7 @@
 #include "plugins/PluginContainerIdentity.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -2295,7 +2296,7 @@ public:
 
     bool process(AudioBufferView buffer, const PluginRoutingView& routing) noexcept override
     {
-        if (failed)
+        if (failed.load(std::memory_order_relaxed))
             return renderPassthrough(routing, buffer.samplesPerFrame);
 
         if (plugin == nullptr || buffer.write == nullptr || buffer.samplesPerFrame <= 0)
@@ -2338,7 +2339,7 @@ public:
 
         if (!processPluginBlockSafely(*plugin, block, midi))
         {
-            failed = true;
+            failed.store(true, std::memory_order_relaxed);
             return renderPassthrough(routing, buffer.samplesPerFrame);
         }
 
@@ -2374,7 +2375,7 @@ public:
         return true;
     }
 
-    bool hasFailed() const noexcept { return failed; }
+    bool hasFailed() const noexcept override { return failed.load(std::memory_order_relaxed); }
     juce::AudioPluginInstance* pluginInstance() noexcept { return plugin.get(); }
     int channelCount() const noexcept { return processChannels; }
 
@@ -2442,7 +2443,8 @@ private:
     int outputPinCount = 2;
     int processChannels = 2;
     int maxBlockSize = 4096;
-    bool failed = false;
+    // Set by the audio thread when the plugin throws in processBlock; read by the control thread.
+    std::atomic<bool> failed { false };
 };
 
 std::unique_ptr<HostedVst3Processor> createHostedProcessorFromFile(
@@ -2811,6 +2813,16 @@ public:
     {
         return workerProcess && WaitForSingleObject(workerProcess, 0) == WAIT_TIMEOUT &&
             PluginEditorWindow::isOpenForProcess(GetProcessId(workerProcess));
+    }
+
+    // A worker that exited leaves this node rendering silence; only installed nodes are asked, and they
+    // were ready when installed.
+    bool hasFailed() const noexcept override
+    {
+        if (!ready)
+            return true;
+
+        return workerProcess != nullptr && WaitForSingleObject(workerProcess, 0) == WAIT_OBJECT_0;
     }
 
     bool openEditor(const std::string& windowTitle, std::string& error) noexcept
@@ -5614,6 +5626,19 @@ bool PluginHostLayer::isPluginNodePowered(int slot) const noexcept
         return false;
 
     return impl->nodeSummaries[static_cast<size_t>(slot)].powered;
+#else
+    return false;
+#endif
+}
+
+bool PluginHostLayer::isPluginNodeFailed(int slot) const noexcept
+{
+#if ELKA_ENABLE_JUCE_PLUGIN_HOST
+    if (slot < 0 || slot >= MaxPluginNodes)
+        return false;
+
+    const auto* processor = impl->nodeProcessors[static_cast<size_t>(slot)].get();
+    return processor != nullptr && processor->hasFailed();
 #else
     return false;
 #endif

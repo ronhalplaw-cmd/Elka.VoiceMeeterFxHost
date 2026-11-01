@@ -544,6 +544,18 @@
                        FontWeight="SemiBold"
                        Foreground="{StaticResource RouteAccentBrush}" />
                         <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <Button x:Name="ToggleViewButton"
+                      Content="Toggle View"
+                      Width="112"
+                      Click="ToggleViewButton_Click" />
+                            <Button x:Name="ToggleViewSettingsButton"
+                      Content="&#xE713;"
+                      FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                      FontWeight="Normal"
+                      Width="38"
+                      Padding="0"
+                      Margin="6,0,16,0"
+                      Click="ToggleViewSettingsButton_Click" />
                             <Button x:Name="ChannelsWorkspaceButton"
                       Content="Channels"
                       Width="92"

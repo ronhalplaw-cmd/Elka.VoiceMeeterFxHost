@@ -12,7 +12,8 @@ public partial class MainWindow
         (endpoint, outputSide, stream, hue) => new SignalMonitorWindow(endpoint.Name,
             outputSide ? "Destination" : "Source", stream, outputSide, endpoint.Range.Start, endpoint.ChannelCount, hue);
 
-    private void OpenSignalMonitor(CallbackMode mode, IoEndpoint endpoint, bool outputSide, int? selectedStream = null, bool toggle = false)
+    private void OpenSignalMonitor(CallbackMode mode, IoEndpoint endpoint, bool outputSide, int? selectedStream = null, bool toggle = false,
+        bool startWithMeters = false)
     {
         int stream = selectedStream ?? CanvasSignalMonitorStream(mode);
         if (!EndpointHotkeyStreamAvailable(stream)) return;
@@ -32,7 +33,12 @@ public partial class MainWindow
         {
             Color hue = SignalMonitorHue(mode, endpoint, outputSide);
             SignalMonitorController? window = null;
-            window = new SignalMonitorController(() => _createSignalMonitorWindow(endpoint, outputSide, stream, hue),
+            window = new SignalMonitorController(() =>
+                {
+                    var created = _createSignalMonitorWindow(endpoint, outputSide, stream, hue);
+                    if (startWithMeters) created.ShowMetersView();
+                    return created;
+                },
                 hue, failure =>
                 {
                     if (Dispatcher.HasShutdownStarted) return;

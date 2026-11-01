@@ -657,6 +657,10 @@ internal sealed class FxHostSettings
     public Dictionary<string, string> EndpointRouteHues { get; set; } = [];
     public Dictionary<string, VoicemeeterEditionWorkspace> EditionWorkspaces { get; set; } = [];
     public List<string> CustomRouteColors { get; set; } = [];
+    public ToggleViewSettings? ToggleView { get; set; }
+    public List<string>? EditorsAlwaysOnTop { get; set; }
+    public Dictionary<string, int[]>? EditorWindowBounds { get; set; }
+    public List<string>? LoadSettingsOnce { get; set; }
 }
 
 internal static class FxHostSettingsStore
@@ -695,8 +699,14 @@ internal static class FxHostSettingsStore
     {
         try
         {
-            Directory.CreateDirectory(SettingsDirectory);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(settings, JsonOptions));
+            var json = JsonSerializer.SerializeToUtf8Bytes(settings, JsonOptions);
+            lock (WriteLock)
+            {
+                // Any background write still waiting holds an older ticket and is dropped.
+                Interlocked.Increment(ref _latestWriteTicket);
+                WriteSettingsFile(json);
+            }
+
             return true;
         }
         catch
@@ -704,6 +714,55 @@ internal static class FxHostSettingsStore
             // Persistence should never interrupt the audio engine or UI.
             return false;
         }
+    }
+
+    // Serializes now, on the caller's (UI) thread that owns the settings, and writes the file on a worker
+    // thread. Writes run one at a time and only the newest queued one is written.
+    public static void SaveInBackground(FxHostSettings settings)
+    {
+        byte[] json;
+        try
+        {
+            json = JsonSerializer.SerializeToUtf8Bytes(settings, JsonOptions);
+        }
+        catch
+        {
+            return;
+        }
+
+        var ticket = Interlocked.Increment(ref _latestWriteTicket);
+        Task.Run(() =>
+        {
+            lock (WriteLock)
+            {
+                if (ticket != Interlocked.Read(ref _latestWriteTicket))
+                {
+                    return;
+                }
+
+                try
+                {
+                    WriteSettingsFile(json);
+                }
+                catch
+                {
+                    // Same as Save: a failed routine save is retried by the next one.
+                }
+            }
+        });
+    }
+
+    private static readonly object WriteLock = new();
+    private static long _latestWriteTicket;
+
+    // Written next to the settings file and moved over it, so an interrupted write never leaves a
+    // truncated settings file behind (Load would then start with empty settings).
+    private static void WriteSettingsFile(byte[] json)
+    {
+        Directory.CreateDirectory(SettingsDirectory);
+        var temporaryPath = SettingsPath + ".tmp";
+        File.WriteAllBytes(temporaryPath, json);
+        File.Move(temporaryPath, SettingsPath, overwrite: true);
     }
 
     internal static FxHostSettings DeserializeSaved(string json)
@@ -1943,6 +2002,29 @@ internal sealed class NativeEngineClient : IDisposable
         }
     }
 
+    // False when the engine predates the failure query (e.g. the original signed DLL is installed).
+    public bool PluginFailureQuerySupported { get; private set; } = true;
+
+    // True when the engine stopped calling this VST after it crashed in its audio callback (audio then
+    // passes through unprocessed), or when its sandbox worker process has exited.
+    public bool IsPluginNodeFailed(int slot)
+    {
+        if (!_attached || !PluginFailureQuerySupported)
+        {
+            return false;
+        }
+
+        try
+        {
+            return ElkaFx_IsPluginNodeFailed(slot) == 1;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            PluginFailureQuerySupported = false;
+            return false;
+        }
+    }
+
     public bool TogglePluginInputRoute(int slot, int sourceChannel, int pluginPin)
     {
         return _attached && ElkaFx_TogglePluginNodeInputRoute(slot, sourceChannel, pluginPin) != 0;
@@ -2008,7 +2090,7 @@ internal sealed class NativeEngineClient : IDisposable
                 return false;
             }
 
-            var required = Math.Clamp(length, 1, 16 * 1024 * 1024);
+            var required = length; // Full length: a capped buffer silently cut large states (e.g. loudness meter history).
             var builder = new StringBuilder(required);
             if (ElkaFx_GetPluginNodeState(slot, builder, builder.Capacity) != 0)
             {
@@ -2049,7 +2131,7 @@ internal sealed class NativeEngineClient : IDisposable
                 return false;
             }
 
-            var required = Math.Clamp(length, 1, 32 * 1024 * 1024);
+            var required = length; // Full length: a capped buffer silently cut large states (e.g. loudness meter history).
             var builder = new StringBuilder(required);
             if (ElkaFx_GetPluginNodePreset(slot, builder, builder.Capacity) != 0)
             {
@@ -2124,7 +2206,7 @@ internal sealed class NativeEngineClient : IDisposable
                 return false;
             }
 
-            var required = Math.Clamp(length, 1, 32 * 1024 * 1024);
+            var required = length; // Full length: a capped buffer silently cut large states (e.g. loudness meter history).
             var builder = new StringBuilder(required);
             if (ElkaFx_GetPluginNodeParameterState(slot, builder, builder.Capacity) != 0)
             {
@@ -2623,6 +2705,9 @@ internal sealed class NativeEngineClient : IDisposable
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern int ElkaFx_SetPluginNodePowered(int slot, int powered);
+
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int ElkaFx_IsPluginNodeFailed(int slot);
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern int ElkaFx_TogglePluginNodeInputRoute(int slot, int sourceChannel, int pluginPin);

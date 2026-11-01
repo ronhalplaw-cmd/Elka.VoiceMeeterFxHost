@@ -140,6 +140,7 @@ public:
     bool isPluginNodeBypassed(int slot) const noexcept;
     void setPluginNodePowered(int slot, bool powered) noexcept;
     bool isPluginNodePowered(int slot) const noexcept;
+    bool isPluginNodeFailed(int slot) const noexcept;
     RealtimePluginProcessor* realtimeProcessor() noexcept;
     RealtimePluginProcessor* realtimeProcessorForSlot(int slot) noexcept;
     std::string loadedPluginName() const;

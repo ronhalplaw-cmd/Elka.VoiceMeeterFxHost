@@ -30,6 +30,7 @@ internal sealed class SignalMonitorWindow : Window
     private int _drawQueued;
     private long _lastDrawBucket;
     private volatile bool _stopped;
+    private Action<bool>? _selectView;
     internal long DisplayFrames => _view.RenderedFrames;
     internal Exception? ReaderFailure { get; private set; }
 
@@ -99,7 +100,7 @@ internal sealed class SignalMonitorWindow : Window
         button.BorderBrush = Brushes.Transparent;
         button.ToolTip = "Highest captured sample peak since opening or reset. Click to reset. Not a true-peak or clipping detector.";
         AutomationProperties.SetName(button, "Reset peak");
-        button.Click += (_, _) => { _mailbox.ResetPeak(); RefreshPeakReadout(); };
+        button.Click += (_, _) => { _mailbox.ResetPeak(); _view.ResetPeakReadouts(); RefreshPeakReadout(); };
         RefreshPeakReadout();
         return button;
     }
@@ -159,6 +160,7 @@ internal sealed class SignalMonitorWindow : Window
         }
         history.Click += (_, _) => Select(true);
         spectrum.Click += (_, _) => Select(false);
+        _selectView = Select;
         Select(true);
         return bar;
     }
@@ -234,6 +236,9 @@ internal sealed class SignalMonitorWindow : Window
         popup.AppendChild(popupBorder); root.AppendChild(popup);
         selector.Template = new ControlTemplate(typeof(ComboBox)) { VisualTree = root };
     }
+
+    // Level meters and spectrum instead of the default History view (canvas meter double-click).
+    internal void ShowMetersView() => _selectView?.Invoke(false);
 
     internal void UpdateHue(Color hue)
     {
@@ -369,6 +374,9 @@ internal sealed class SignalMonitorView : FrameworkElement
     private static readonly double[] GridHz = [20, 100, 1000, 10000, 20000];
     private Brush _hue = GreenBrush, _dim = FieldBrush, _header = FieldBrush;
     private Pen _spectrumPen = GridPen;
+    // Per-channel highest peak and clipping since the window opened or the Peak readout was reset.
+    private readonly double[] _maxPeakDb = Enumerable.Repeat(double.NegativeInfinity, 8).ToArray();
+    private readonly bool[] _clipped = new bool[8];
 
     internal SignalMonitorView(string endpoint, string side, int channels, Color hue)
     {
@@ -380,6 +388,16 @@ internal sealed class SignalMonitorView : FrameworkElement
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.HighQuality);
         SetHue(hue);
     }
+
+    internal void ResetPeakReadouts()
+    {
+        Array.Fill(_maxPeakDb, double.NegativeInfinity);
+        Array.Fill(_clipped, false);
+        InvalidateVisual();
+    }
+
+    private static string FormatDb(double db) =>
+        double.IsNegativeInfinity(db) || db <= -60 ? "-inf" : db.ToString(db >= 0 ? "+0.0" : "0.0", CultureInfo.InvariantCulture);
 
     private static SolidColorBrush Frozen(Color color)
     {
@@ -408,6 +426,16 @@ internal sealed class SignalMonitorView : FrameworkElement
     internal void Advance(SignalMonitorFrame? frame, SignalMonitorHistorySnapshot? history = null)
     {
         _ballistics.Advance(frame, SignalMonitorBallistics.Now);
+        if (frame is not null)
+        {
+            for (int c = 0; c < _channels && c < frame.Peaks.Length; ++c)
+            {
+                float peak = frame.Peaks[c];
+                if (peak <= 0 || !float.IsFinite(peak)) continue;
+                _maxPeakDb[c] = Math.Max(_maxPeakDb[c], 20 * Math.Log10(peak));
+                if (peak >= 1.0f) _clipped[c] = true;
+            }
+        }
         if (!_historyPaused)
         {
             _historyTime = SignalMonitorBallistics.Now;
@@ -462,7 +490,7 @@ internal sealed class SignalMonitorView : FrameworkElement
     private void Meters(DrawingContext dc, Rect area)
     {
         const double barWidth = 11;
-        double top = area.Y + 6, barHeight = Math.Max(40, area.Height - 30);
+        double top = area.Y + 6, barHeight = Math.Max(40, area.Height - 54);
         double start = area.X + (_channels == 2 ? 14 : 3);
         bool resized = area != _meterBounds;
         _meterBounds = area;
@@ -498,6 +526,9 @@ internal sealed class SignalMonitorView : FrameworkElement
                 dc.DrawRectangle(TextBrush, null, new Rect(x - 1, y, barWidth + 2, 1.5));
             }
             Text(dc, Labels[c], x + barWidth / 2, top + barHeight + 7, 9, MutedBrush, centered: true);
+            // Live peak-hold value, then the highest peak since reset (red once clipped).
+            Text(dc, FormatDb(_ballistics.Peaks[c]), x + barWidth / 2, top + barHeight + 20, 9, TextBrush, centered: true);
+            Text(dc, FormatDb(_maxPeakDb[c]), x + barWidth / 2, top + barHeight + 32, 9, _clipped[c] ? RedBrush : MutedBrush, centered: true);
         }
         for (int db = 0; db <= 60; db += 6)
             Text(dc, db.ToString(CultureInfo.InvariantCulture), start + 27.5, top + db / 60.0 * barHeight - 6, 9, MutedBrush, centered: true);

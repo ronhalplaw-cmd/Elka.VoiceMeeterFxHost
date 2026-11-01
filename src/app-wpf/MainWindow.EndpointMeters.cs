@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -126,6 +127,16 @@ public partial class MainWindow
         elements.Add(view);
         int stream = _vstCanvasMode == CallbackMode.Main || IsInputDirectOutputVstView()
             ? 2 : mode == CallbackMode.Output ? 1 : 0;
+        // Double-click on the meter strip opens this endpoint's Signal Monitor on its level meters;
+        // elsewhere on the card double-click still expands/minimizes the pins.
+        card.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ClickCount != 2 || Keyboard.Modifiers != ModifierKeys.None) return;
+            var point = e.GetPosition(view);
+            if (point.X < 0 || point.Y < -3 || point.X > view.ActualWidth || point.Y > view.ActualHeight + 3) return;
+            OpenSignalMonitor(mode, endpoint, outputSide, stream, startWithMeters: true);
+            e.Handled = true;
+        };
         var address = new EndpointMeterAddress(stream, outputSide, endpoint.Range.Start, endpoint.ChannelCount);
         var key = (_kind, address);
         if (!_endpointPeakStates.TryGetValue(key, out var peak))

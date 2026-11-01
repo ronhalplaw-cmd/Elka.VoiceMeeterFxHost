@@ -217,6 +217,47 @@ std::mutex g_mutex;
 std::mutex g_scanMutex;
 std::unique_ptr<NativeHost> g_host;
 
+// The app reads a VST state or preset with two calls: its length, then its text. The text captured by
+// the length call is kept (guarded by g_mutex) and handed to the following text call for the same slot,
+// so the plugin serializes its state once per read instead of twice. Any other call captures afresh.
+struct PendingCapture
+{
+    int slot = -1;
+    std::string text;
+};
+
+PendingCapture g_pendingState;
+PendingCapture g_pendingPreset;
+
+// Returns the length call's result. An empty capture is not kept: the text call then captures again and
+// reports the plugin layer's error itself.
+int keepPendingCapture(PendingCapture& pending, int slot, std::string text)
+{
+    if (text.empty())
+    {
+        pending.slot = -1;
+        pending.text.clear();
+        return 1;
+    }
+
+    const auto length = static_cast<int>(text.size()) + 1;
+    pending.slot = slot;
+    pending.text = std::move(text);
+    return length;
+}
+
+bool takePendingCapture(PendingCapture& pending, int slot, std::string& text)
+{
+    const auto matches = pending.slot == slot;
+    if (matches)
+        text = std::move(pending.text);
+
+    pending.slot = -1;
+    pending.text.clear();
+    pending.text.shrink_to_fit();
+    return matches;
+}
+
 struct ScanProgressState
 {
     bool running = false;
@@ -3241,6 +3282,24 @@ __declspec(dllexport) int __cdecl ElkaFx_SetPluginNodePowered(int slot, int powe
     return 0;
 }
 
+// Read-only: 1 when the VST in this slot is no longer being run (see RealtimePluginProcessor::hasFailed),
+// 0 when it is running or the slot is empty. Changes nothing.
+__declspec(dllexport) int __cdecl ElkaFx_IsPluginNodeFailed(int slot)
+{
+    try
+    {
+        std::lock_guard lock(g_mutex);
+        if (!g_host)
+            return 0;
+
+        return g_host->plugins.isPluginNodeFailed(slot) ? 1 : 0;
+    }
+    catch (...)
+    {
+        return 0;
+    }
+}
+
 __declspec(dllexport) int __cdecl ElkaFx_TogglePluginNodeInputRoute(int slot, int sourceChannel, int pluginPin)
 {
     std::lock_guard lock(g_mutex);
@@ -3316,8 +3375,7 @@ __declspec(dllexport) int __cdecl ElkaFx_GetPluginNodeStateLength(int slot)
     {
         std::lock_guard lock(g_mutex);
         auto& target = host();
-        const auto state = target.plugins.pluginNodeStateBase64(slot);
-        return state.empty() ? 1 : static_cast<int>(state.size()) + 1;
+        return keepPendingCapture(g_pendingState, slot, target.plugins.pluginNodeStateBase64(slot));
     }
     catch (...)
     {
@@ -3331,7 +3389,14 @@ __declspec(dllexport) int __cdecl ElkaFx_GetPluginNodeState(int slot, wchar_t* b
     {
         std::lock_guard lock(g_mutex);
         auto& target = host();
-        const auto state = target.plugins.pluginNodeStateBase64(slot);
+        std::string state;
+        if (takePendingCapture(g_pendingState, slot, state))
+        {
+            writeWide(widenUtf8(state), buffer, bufferChars);
+            return 0;
+        }
+
+        state = target.plugins.pluginNodeStateBase64(slot);
         writeWide(widenUtf8(state), buffer, bufferChars);
         return state.empty() && !target.plugins.lastError().empty() ? -1 : 0;
     }
@@ -3362,8 +3427,7 @@ __declspec(dllexport) int __cdecl ElkaFx_GetPluginNodePresetLength(int slot)
     {
         std::lock_guard lock(g_mutex);
         auto& target = host();
-        const auto preset = target.plugins.pluginNodePresetBase64(slot);
-        return preset.empty() ? 1 : static_cast<int>(preset.size()) + 1;
+        return keepPendingCapture(g_pendingPreset, slot, target.plugins.pluginNodePresetBase64(slot));
     }
     catch (...)
     {
@@ -3377,7 +3441,14 @@ __declspec(dllexport) int __cdecl ElkaFx_GetPluginNodePreset(int slot, wchar_t* 
     {
         std::lock_guard lock(g_mutex);
         auto& target = host();
-        const auto preset = target.plugins.pluginNodePresetBase64(slot);
+        std::string preset;
+        if (takePendingCapture(g_pendingPreset, slot, preset))
+        {
+            writeWide(widenUtf8(preset), buffer, bufferChars);
+            return 0;
+        }
+
+        preset = target.plugins.pluginNodePresetBase64(slot);
         writeWide(widenUtf8(preset), buffer, bufferChars);
         return preset.empty() && !target.plugins.lastError().empty() ? -1 : 0;
     }
